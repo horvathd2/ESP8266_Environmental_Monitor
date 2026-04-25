@@ -1,0 +1,36 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "compilerPath": "C:\\ProgramData\\mingw64\\mingw64\\bin\\gcc.exe",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "windows-gcc-x64"
+        },
+        {
+            "name": "ESP8266 RTOS SDK (Windows)",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "D:\\esp\\ESP8266_RTOS_SDK\\components\\**",
+                "${workspaceFolder}/build/**"
+            ],
+            "defines": [
+                "__ESP8266__",
+                "ESP8266",
+                "__ESP_FILE__"
+            ],
+            "compilerPath": "C:\\msys32\\opt\\xtensa-lx106-elf\\bin\\xtensa-lx106-elf-gcc.exe",
+            "intelliSenseMode": "gcc-x86",
+            "cStandard": "c11"
+        }
+    ],
+    "version": 4
+}
