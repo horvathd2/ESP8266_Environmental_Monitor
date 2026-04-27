@@ -20,7 +20,8 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "D:\\esp\\ESP8266_RTOS_SDK\\components\\**",
-                "${workspaceFolder}/build/**"
+                "${workspaceFolder}/build/**",
+                "${workspaceFolder}/include/**"
             ],
             "defines": [
                 "__ESP8266__",
