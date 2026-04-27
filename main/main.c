@@ -37,16 +37,8 @@
 #include "lwip/sys.h"
 #include "lwip/api.h"
 
-static const char *TAG = "main";
-
 #define LED_GPIO GPIO_NUM_2
 
-
-/* The examples use WiFi configuration that you can set via project configuration menu.
-
-   If you'd rather not, just change the below entries to strings with
-   the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
-*/
 #ifndef CONFIG_ESP_MAX_STA_CONN
 #define CONFIG_ESP_MAX_STA_CONN 4     // or 8
 #endif
@@ -56,8 +48,11 @@ static const char *TAG = "main";
 #define EXAMPLE_MAX_STA_CONN       CONFIG_ESP_MAX_STA_CONN
 #define EXAMPLE_ESP_MAXIMUM_RETRY  5
 
-/* FreeRTOS event group to signal when we are connected*/
-static EventGroupHandle_t s_wifi_event_group;
+/* The examples use WiFi configuration that you can set via project configuration menu.
+
+   If you'd rather not, just change the below entries to strings with
+   the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
+*/
 
 /* The event group allows multiple bits for each event, but we only care about two events:
  * - we are connected to the AP with an IP
@@ -67,8 +62,15 @@ static EventGroupHandle_t s_wifi_event_group;
 
 #define BUF_SIZE (1024)
 
+/* FreeRTOS event group to signal when we are connected*/
+static EventGroupHandle_t s_wifi_event_group;
+
+static const char *TAG = "main";
 
 static int s_retry_num = 0;
+
+static SemaphoreHandle_t mpu6050_mutex;
+static MPU6050_t mpu6050_dev;
 
 static void event_handler(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
@@ -190,9 +192,10 @@ void httpd_task(void *pvParameters)
     netconn_bind(nc, IP_ADDR_ANY, 80);
     netconn_listen(nc);
 
-    char buf[512];
+    char buf[1024];
 
     while (1) {
+
         struct netconn *client = NULL;
         struct netbuf *nb = NULL;
 
@@ -201,26 +204,106 @@ void httpd_task(void *pvParameters)
             continue;
         }
 
-        if (netconn_recv(client, &nb) == ERR_OK && nb != NULL) {
+        err = netconn_recv(client, &nb);
+        if (err == ERR_OK && nb != NULL) {
+
             void *data;
             u16_t len;
-
             netbuf_data(nb, &data, &len);
 
-            printf("Received:\n%.*s\n", len, (char*)data);
+            char *req = (char *)data;
 
-            snprintf(buf, sizeof(buf),
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/html\r\n\r\n"
-                "<html><h1>ESP8266 OK</h1></html>"
-            );
+            printf("Received:\n%.*s\n", len, req);
 
-            netconn_write(client, buf, strlen(buf), NETCONN_COPY);
+            /* ---------------------------
+               ROUTE: /toggle
+            ----------------------------*/
+            if (strncmp(req, "GET /toggle", 11) == 0) {
+
+                gpio_set_level(LED_GPIO, !gpio_get_level(LED_GPIO));
+
+                const char *resp =
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Connection: close\r\n\r\n"
+                    "OK";
+
+                netconn_write(client, resp, strlen(resp), NETCONN_COPY);
+            }
+
+            /* ---------------------------
+               ROUTE: /data
+            ----------------------------*/
+            else if (strncmp(req, "GET /data", 9) == 0) {
+
+                xSemaphoreTake(mpu6050_mutex, portMAX_DELAY);
+
+                float local_temp = mpu6050_dev.temperature;
+                int16_t accelX = (int16_t)((mpu6050_dev.sensor_data[0] << 8) | mpu6050_dev.sensor_data[1]);
+                int16_t accelY = (int16_t)((mpu6050_dev.sensor_data[2] << 8) | mpu6050_dev.sensor_data[3]);
+                int16_t accelZ = (int16_t)((mpu6050_dev.sensor_data[4] << 8) | mpu6050_dev.sensor_data[5]);
+
+                xSemaphoreGive(mpu6050_mutex);
+
+                int whole = (int)local_temp;
+                int frac = abs((int)(local_temp * 100) % 100);
+
+                snprintf(buf, sizeof(buf),
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Connection: close\r\n\r\n"
+                    "%d.%02d,%d,%d,%d",
+                    whole, frac,
+                    accelX, accelY, accelZ
+                );
+
+                netconn_write(client, buf, strlen(buf), NETCONN_COPY);
+            }
+
+            /* ---------------------------
+               ROUTE: /
+            ----------------------------*/
+            else {
+
+                snprintf(buf, sizeof(buf),
+                    "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: text/html\r\n"
+                    "Connection: close\r\n\r\n"
+
+                    "<html><body>"
+                    "<h2>ESP8266 Dashboard</h2>"
+
+                    "<p>Temperature: <span id='temp'>--</span> C</p>"
+                    "<p>Accel X: <span id='ax'>--</span></p>"
+                    "<p>Accel Y: <span id='ay'>--</span></p>"
+                    "<p>Accel Z: <span id='az'>--</span></p>"
+
+                    "<button onclick=\"fetch('/toggle')\">Toggle LED</button>"
+
+                    "<script>"
+                    "setInterval(() => {"
+                    " fetch('/data')"
+                    "  .then(r => r.text())"
+                    "  .then(data => {"
+                    "    let values = data.split(',');"
+                    "    document.getElementById('temp').innerText = values[0];"
+                    "    document.getElementById('ax').innerText = values[1];"
+                    "    document.getElementById('ay').innerText = values[2];"
+                    "    document.getElementById('az').innerText = values[3];"
+                    "  });"
+                    "}, 100);"
+                    "</script>"
+
+                    "</body></html>"
+                );
+
+                netconn_write(client, buf, strlen(buf), NETCONN_COPY);
+            }
         }
 
-        if (nb) netbuf_delete(nb);
-
-        printf("Closing connection\n");
+        if (nb) {
+            netbuf_delete(nb);
+        }
 
         netconn_close(client);
         netconn_delete(client);
@@ -229,16 +312,19 @@ void httpd_task(void *pvParameters)
 
 static void i2c_task_example(void *arg)
 {
-    MPU6050_t mpu6050_dev;
+    xSemaphoreTake(mpu6050_mutex, portMAX_DELAY);
+    memset(&mpu6050_dev, 0, sizeof(MPU6050_t));
+    mpu6050_i2c_init(&mpu6050_dev, I2C_EXAMPLE_MASTER_NUM);
+    xSemaphoreGive(mpu6050_mutex);
+
     uint8_t who_am_i, i;
-    double Temp;
     static uint32_t error_count = 0;
     int ret;
 
-    mpu6050_i2c_init(&mpu6050_dev, I2C_EXAMPLE_MASTER_NUM);
-
     while (1) {
         who_am_i = 0;
+
+        xSemaphoreTake(mpu6050_mutex, portMAX_DELAY);
         mpu6050_i2c_read(&mpu6050_dev, WHO_AM_I, &who_am_i, 1);
 
         if (0x68 != who_am_i) {
@@ -247,13 +333,13 @@ static void i2c_task_example(void *arg)
 
         memset(mpu6050_dev.sensor_data, 0, 14);
         ret = mpu6050_i2c_read(&mpu6050_dev, ACCEL_XOUT_H, mpu6050_dev.sensor_data, 14);
+        mpu6050_dev.temperature = (float)(36.53 + ((int16_t)((mpu6050_dev.sensor_data[6] << 8) | mpu6050_dev.sensor_data[7]) / 340.0));
+        xSemaphoreGive(mpu6050_mutex);
 
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "*******************\n");
             ESP_LOGI(TAG, "WHO_AM_I: 0x%02x\n", who_am_i);
-            Temp = 36.53 + ((double)(int16_t)((mpu6050_dev.sensor_data[6] << 8) | mpu6050_dev.sensor_data[7]) / 340);
-            ESP_LOGI(TAG, "TEMP: %d.%d\n", (uint16_t)Temp, (uint16_t)(Temp * 100) % 100);
-
+            ESP_LOGI(TAG, "TEMP: %d.%d\n", (uint16_t)mpu6050_dev.temperature, (uint16_t)(mpu6050_dev.temperature * 100) % 100);
             for (i = 0; i < 7; i++) {
                 ESP_LOGI(TAG, "sensor_data[%d]: %d\n", i, (int16_t)((mpu6050_dev.sensor_data[i * 2] << 8) | mpu6050_dev.sensor_data[i * 2 + 1]));
             }
@@ -290,9 +376,12 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
 
-    xTaskCreate(i2c_task_example, "i2c_task_example", 2048, NULL, 10, NULL);
+    mpu6050_mutex = xSemaphoreCreateMutex();
+
+    xTaskCreate(i2c_task_example, "i2c_task_example", 4096, NULL, 10, NULL);
+    vTaskDelay(20/portTICK_PERIOD_MS);
+    xTaskCreate(httpd_task, "httpd", 8192, NULL, 5, NULL);
     //xTaskCreate(echo_task, "uart_echo_task", 1024, NULL, 10, NULL);
-    xTaskCreate(httpd_task, "httpd", 4096, NULL, 5, NULL);
 
     while(1)
     {

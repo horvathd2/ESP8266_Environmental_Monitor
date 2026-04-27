@@ -56,6 +56,7 @@ typedef struct{
     i2c_config_t conf;
     i2c_port_t i2c_num;
 	uint8_t sensor_data[14];
+    float temperature;
 }MPU6050_t;
 
 esp_err_t i2c_master_init(MPU6050_t *self);
